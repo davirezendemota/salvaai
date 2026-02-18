@@ -1,0 +1,9 @@
+python-telegram-bot[job-queue]==21.7
+yt-dlp>=2024.1.0
+python-dotenv==1.0.1
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+# opcional: reload em desenvolvimento (watchmedo)
+watchdog>=4.0.0
+# fila de downloads
+redis>=5.0.0
