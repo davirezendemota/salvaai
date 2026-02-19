@@ -1,5 +1,6 @@
 .env
 .env.production
+cookies.txt
 __pycache__/
 *.py[cod]
 .venv/
