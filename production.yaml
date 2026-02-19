@@ -11,7 +11,7 @@ services:
   bot:
     platform: linux/amd64
     container_name: davirezendemota_salvaai_bot_production
-    image: ghcr.io/davirezendemota/salvaai_bot:production
+    image: ghcr.io/davirezendemota/salvaai_bot
     restart: unless-stopped
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
