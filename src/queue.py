@@ -4,8 +4,6 @@ import asyncio
 import json
 import logging
 import os
-import shutil
-import uuid
 from datetime import timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,15 +15,15 @@ if TYPE_CHECKING:
     from telegram.ext import Application
 
 from src.downloader import NoVideoInPostError, download_video, DownloadResult
-from src.file_server import save_for_download
-from src.video_utils import get_video_dimensions
+from src.summary import generate_summary
+from src.transcribe import transcribe_video
+from src.video_utils import get_video_dimensions, video_to_gif
 
 logger = logging.getLogger(__name__)
 
 QUEUE_KEY = "instagram_bot:download_queue"
 TELEGRAM_CAPTION_MAX_LENGTH = 1024
 TELEGRAM_MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
-TELEGRAM_LOCAL_MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024  # 2 GB com Local Bot API
 DOWNLOADS_PER_DAY_LIMIT = 10
 DAILY_KEY_PREFIX = "instagram_bot:daily"
 DAILY_KEY_TTL_SECONDS = 86400 * 2  # 2 dias para expirar a chave do dia
@@ -98,7 +96,7 @@ async def _process_job(bot: "Bot", bot_data: dict, payload: dict) -> None:
     redis = bot_data.get("redis")
 
     video_path: Path | None = None
-    shared_path: Path | None = None
+    gif_path: Path | None = None
     description: str | None = None
     try:
         try:
@@ -125,58 +123,91 @@ async def _process_job(bot: "Bot", bot_data: dict, payload: dict) -> None:
             )
             return
 
-        size = video_path.stat().st_size
-        use_local_bot_api = bot_data.get("use_local_bot_api", False)
-        max_size = TELEGRAM_LOCAL_MAX_FILE_SIZE_BYTES if use_local_bot_api else TELEGRAM_MAX_FILE_SIZE_BYTES
-        size_limit_mb = max_size // (1024 * 1024)
+        # Caption: resumo (transcrição + GPT) se habilitado, senão descrição bruta
+        caption: str | None = None
+        api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+        enable_summary = (os.getenv("ENABLE_VIDEO_SUMMARY", "true").strip().lower() not in ("0", "false", "no"))
+        if enable_summary and api_key:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_message_id,
+                text="Transcrevendo e gerando resumo...",
+            )
+            transcription = await asyncio.to_thread(transcribe_video, video_path, api_key=api_key)
+            summary_text = await asyncio.to_thread(
+                generate_summary,
+                transcription,
+                description,
+                api_key=api_key,
+            )
+            if summary_text:
+                caption = summary_text
+        if caption is None and description:
+            caption = description
+        if caption and len(caption) > TELEGRAM_CAPTION_MAX_LENGTH:
+            caption = caption[: TELEGRAM_CAPTION_MAX_LENGTH - 3] + "..."
 
-        if size > max_size:
-            base_url = bot_data.get("base_url")
-            if base_url:
+        size = video_path.stat().st_size
+
+        if size > TELEGRAM_MAX_FILE_SIZE_BYTES:
+            # Vídeo > 50 MB: converte para GIF e envia com URL do vídeo na descrição
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_message_id,
+                text="Vídeo maior que 50 MB. Convertendo para GIF...",
+            )
+            try:
+                gif_path = await asyncio.to_thread(video_to_gif, video_path)
+            except Exception as e:
+                logger.warning("Falha ao converter vídeo para GIF: %s", e)
+                gif_path = None
+
+            if (
+                gif_path
+                and gif_path.exists()
+                and gif_path.stat().st_size <= TELEGRAM_MAX_FILE_SIZE_BYTES
+            ):
+                gif_caption_parts = []
+                if caption:
+                    gif_caption_parts.append(caption)
+                gif_caption_parts.append(f"Vídeo original: {url}")
+                gif_caption = "\n\n".join(gif_caption_parts)
+                if len(gif_caption) > TELEGRAM_CAPTION_MAX_LENGTH:
+                    gif_caption = gif_caption[: TELEGRAM_CAPTION_MAX_LENGTH - 3] + "..."
+
+                with open(gif_path, "rb") as f:
+                    await bot.send_animation(
+                        chat_id=chat_id,
+                        animation=f,
+                        caption=gif_caption,
+                        read_timeout=60,
+                        write_timeout=60,
+                    )
+                if redis:
+                    await increment_daily_download_count(redis, chat_id)
+                    count = await get_daily_download_count(redis, chat_id)
+                    status_text = f"Enviado como GIF (vídeo > 50 MB). {count}/{DOWNLOADS_PER_DAY_LIMIT}"
+                else:
+                    status_text = "Enviado como GIF (vídeo > 50 MB)."
                 await bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=status_message_id,
-                    text="Disponibilizando link de download...",
+                    text=status_text,
                 )
-                try:
-                    _file_id, download_url = save_for_download(
-                        video_path, base_url, delete_after_seconds=3600
-                    )
-                    if description:
-                        caption = (
-                            description[:TELEGRAM_CAPTION_MAX_LENGTH - 3] + "..."
-                            if len(description) > TELEGRAM_CAPTION_MAX_LENGTH
-                            else description
-                        )
-                        await bot.send_message(chat_id=chat_id, text=caption)
-                    await bot.send_message(
-                        chat_id=chat_id,
-                        text="Download (expira em 1 hora):",
-                    )
-                    await bot.send_message(chat_id=chat_id, text=download_url)
-                    await bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=status_message_id,
-                        text="O link expira em 1 hora.",
-                    )
-                    if redis:
-                        await increment_daily_download_count(redis, chat_id)
-                except Exception as e:
-                    logger.exception("Erro ao hospedar vídeo: %s", e)
-                    await bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=status_message_id,
-                        text=f"O vídeo é maior que {size_limit_mb} MB e não foi possível gerar o link. Tente outro.",
-                    )
-            else:
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=status_message_id,
-                    text=(
-                        f"O vídeo é maior que {size_limit_mb} MB (limite do Telegram para este bot). "
-                        "Configure TELEGRAM_BOT_API_BASE_URL (Local Bot API) ou BASE_URL para link de download."
-                    ),
-                )
+                _ensure_file_removed(gif_path)
+                return
+
+            # Conversão para GIF falhou ou GIF ficou > 50 MB
+            if gif_path:
+                _ensure_file_removed(gif_path)
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_message_id,
+                text=(
+                    "O vídeo é maior que 50 MB e não foi possível converter para GIF. "
+                    "Tente outro link."
+                ),
+            )
             return
 
         await bot.edit_message_text(
@@ -186,41 +217,17 @@ async def _process_job(bot: "Bot", bot_data: dict, payload: dict) -> None:
         )
         dimensions = get_video_dimensions(video_path)
         send_kwargs: dict = {"read_timeout": 60, "write_timeout": 60}
-        if use_local_bot_api:
-            send_kwargs["read_timeout"] = 300
-            send_kwargs["write_timeout"] = 300
         if dimensions:
             send_kwargs["width"], send_kwargs["height"] = dimensions
-        if description:
-            send_kwargs["caption"] = (
-                description[:TELEGRAM_CAPTION_MAX_LENGTH - 3] + "..."
-                if len(description) > TELEGRAM_CAPTION_MAX_LENGTH
-                else description
-            )
+        if caption:
+            send_kwargs["caption"] = caption
 
-        send_as_path = use_local_bot_api and bot_data.get("local_mode", False)
-        path_for_api: Path = video_path
-        if send_as_path:
-            storage_dir = Path(os.getenv("STORAGE_DIR", "/app/storage"))
-            storage_dir.mkdir(parents=True, exist_ok=True)
-            shared_path = storage_dir / f"{uuid.uuid4()}.mp4"
-            await asyncio.to_thread(shutil.copy2, video_path, shared_path)
-            path_for_api = shared_path
-
-        # Sempre envia no mesmo chat (sem canal)
-        if send_as_path:
+        with open(video_path, "rb") as f:
             await bot.send_video(
                 chat_id=chat_id,
-                video=path_for_api,
+                video=f,
                 **send_kwargs,
             )
-        else:
-            with open(video_path, "rb") as f:
-                await bot.send_video(
-                    chat_id=chat_id,
-                    video=f,
-                    **send_kwargs,
-                )
         if redis:
             await increment_daily_download_count(redis, chat_id)
             count = await get_daily_download_count(redis, chat_id)
@@ -244,8 +251,7 @@ async def _process_job(bot: "Bot", bot_data: dict, payload: dict) -> None:
             pass
     finally:
         _ensure_file_removed(video_path)
-        if shared_path is not None:
-            _ensure_file_removed(shared_path)
+        _ensure_file_removed(gif_path)
 
 
 async def run_worker(redis: Redis, app: "Application") -> None:
@@ -268,4 +274,9 @@ async def run_worker(redis: Redis, app: "Application") -> None:
             break
         except Exception as e:
             logger.exception("Erro no worker da fila: %s", e)
-            await asyncio.sleep(2)
+            try:
+                await asyncio.sleep(2)
+            except RuntimeError as re:
+                if "no running event loop" in str(re).lower():
+                    break
+                raise
