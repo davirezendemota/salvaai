@@ -1,0 +1,33 @@
+services:
+  redis:
+    platform: linux/amd64
+    container_name: davirezendemota_salvaai_redis_production
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - default
+  bot:
+    platform: linux/amd64
+    container_name: davirezendemota_salvaai_bot_production
+    image: ghcr.io/davirezendemota/resumeai:production
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - REDIS_URL=redis://redis:6379/0
+    networks:
+      - default
+    depends_on:
+      - redis
+    command: ["python", "-m", "src.main"]
+networks:
+  proxy:
+    external: true
+volumes:
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /workspace/volumes/davirezendemota/salvaai/redis
