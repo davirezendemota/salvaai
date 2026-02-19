@@ -37,7 +37,7 @@ O código em `src/` é montado no container e o bot reinicia automaticamente (re
    - `https://www.instagram.com/p/xxxxx/`
 4. O bot responde com "Na fila. Baixando em breve..." e, em seguida, envia o vídeo na mesma conversa.
 
-**Limite:** por padrão, vídeos maiores que 50 MB (limite da Bot API oficial do Telegram) não são enviados; o bot informa na conversa. Para enviar vídeos até 2 GB, use um servidor local da Bot API (veja `.env.example` e opção no `docker-compose.yml`).
+**Vídeos > 50 MB:** o bot converte para GIF e envia com a URL do vídeo original na descrição.
 
 ## Desenvolvimento local (sem Docker)
 
@@ -57,4 +57,4 @@ python -m src.main
 
 - `/start` – Mensagem de boas-vindas
 - `/help` – Lista de comandos e como enviar links
-- `/delete` – Apaga todos os vídeos no diretório de storage do servidor
+- `/delete` – Resposta informando que o bot não usa mais servidor de download
