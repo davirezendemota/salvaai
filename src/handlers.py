@@ -1,13 +1,11 @@
 """Handlers do bot: comandos e mensagens com link Instagram."""
 
-import asyncio
 import logging
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from src.downloader import extract_instagram_urls, is_instagram_link
-from src.file_server import clear_storage
 from src.queue import can_download_today, push_job
 
 logger = logging.getLogger(__name__)
@@ -25,8 +23,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Comandos:\n"
         "/start - Início\n"
-        "/help - Esta ajuda\n"
-        "/delete - Apaga todos os vídeos em storage\n\n"
+        "/help - Esta ajuda\n\n"
         "Envie uma mensagem com um link do Instagram (reel ou post) "
         "e eu baixo o vídeo e envio aqui no chat. Exemplo:\n"
         "https://www.instagram.com/reel/xxxxx/\n"
@@ -35,19 +32,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Apaga todos os vídeos no diretório de storage."""
-    try:
-        count = await asyncio.to_thread(clear_storage)
-    except Exception as e:
-        logger.exception("Erro ao limpar storage: %s", e)
-        await update.message.reply_text("Erro ao apagar os vídeos. Tente de novo.")
-        return
-    if count == 0:
-        await update.message.reply_text(
-            "Nenhum vídeo em storage (já estava vazio ou storage não configurado)."
-        )
-    else:
-        await update.message.reply_text(f"Storage limpo: {count} vídeo(s) apagado(s).")
+    """Comando mantido por compatibilidade; o bot não usa mais servidor de download."""
+    await update.message.reply_text(
+        "O bot não usa mais servidor de download. Vídeos são enviados direto ou como GIF (se > 50 MB)."
+    )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

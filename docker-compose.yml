@@ -5,33 +5,13 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    restart: unless-stopped
-
-  # Opcional: servidor local da Bot API para vídeos até 2 GB.
-  # Descomente e defina TELEGRAM_API_ID e TELEGRAM_API_HASH no .env (https://my.telegram.org).
-  # telegram-bot-api:
-  #   build:
-  #     context: .
-  #     dockerfile: telegramapi.Dockerfile
-  #   environment:
-  #     TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
-  #     TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
-  #   ports:
-  #     - "8081:8081"
-  #   restart: unless-stopped
-
   bot:
     build: .
     env_file: .env
     volumes:
       - ./src:/app/src
-      - ./storage:/app/storage
-    ports:
-      - "8080:8080"
     depends_on:
       - redis
     command: ["watchmedo", "auto-restart", "-d", "/app/src", "-p", "*.py", "--", "python", "-m", "src.main"]
-    restart: "no"
-
 volumes:
   redis_data: {}
