@@ -7,3 +7,5 @@ uvicorn[standard]>=0.32.0
 watchdog>=4.0.0
 # fila de downloads
 redis>=5.0.0
+# resumo de vídeo (transcrição Whisper + resumo GPT)
+openai>=1.0.0
