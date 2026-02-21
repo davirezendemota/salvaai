@@ -2,8 +2,28 @@
 
 import logging
 import re
+import unicodedata
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_hashtag_word(word: str) -> str:
+    """Remove acentos do texto (ex.: motivação → motivacao)."""
+    nfd = unicodedata.normalize("NFD", word)
+    return "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+
+
+def normalize_hashtags(text: str) -> str:
+    """
+    Normaliza todas as hashtags no texto: sem acentos e sem espaços entre # e a palavra.
+    Ex.: #motivação → #motivacao, # hábitos → #habitos
+    """
+    def replace(match: re.Match) -> str:
+        word = match.group(1)
+        normalized = _normalize_hashtag_word(word)
+        return f"#{normalized}" if normalized else "#"
+
+    return re.sub(r"#\s*([^\s#]+)", replace, text)
 
 SUMMARY_SYSTEM_PROMPT = """Você vai atuar como um **resumidor inteligente de vídeos do Instagram**.
 
@@ -24,7 +44,7 @@ SUMMARY_SYSTEM_PROMPT = """Você vai atuar como um **resumidor inteligente de v�
 * As **outras 9 hashtags** devem ser estratégicas para indexação futura, baseadas exclusivamente no conteúdo real do vídeo.
 * Não usar hashtags genéricas como #fyp, #viral, #reels etc.
 * Evitar variações repetidas da mesma palavra.
-* Formato: todas iniciando com `#` e separadas por espaço em uma única linha (total 10 hashtags).
+* Formato: todas iniciando com `#` e separadas por espaço em uma única linha (total 10 hashtags). Use apenas letras sem acento e sem espaços (ex.: #motivacao, #habitos, #persistencia).
 
 **Formato de saída obrigatório:**
 
@@ -51,8 +71,9 @@ def _parse_summary_response(response: str) -> str | None:
     resumo = resumo_match.group(1).strip() if resumo_match else None
     hashtags_line = hashtags_match.group(1).strip() if hashtags_match else None
     if hashtags_line:
-        # uma linha só, sem quebras
+        # uma linha só, sem quebras; hashtags sem acentos nem espaços
         hashtags_line = " ".join(hashtags_line.split())
+        hashtags_line = normalize_hashtags(hashtags_line)
     if resumo and hashtags_line:
         return f"{resumo}\n\n{hashtags_line}"
     if resumo:

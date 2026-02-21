@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import threading
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -14,9 +15,23 @@ from telegram.ext import (
     filters,
 )
 
+from src.db.session import create_all_tables, seed_plans_if_empty, seed_test_balance_if_set
 from src.downloader import COOKIES_FILE_DEFAULT
-from src.handlers import cmd_delete, cmd_help, cmd_start, handle_document, handle_message
+from src.handlers import (
+    cmd_comprar,
+    cmd_delete,
+    cmd_help,
+    cmd_historico,
+    cmd_planos,
+    cmd_saldo,
+    cmd_start,
+    cmd_whitelist,
+    handle_document,
+    handle_message,
+)
+from src.payments.service import PaymentService
 from src.queue import run_worker
+from src.webhook import app as webhook_app
 
 load_dotenv()
 
@@ -30,6 +45,12 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+
+def _run_webhook_server() -> None:
+    import uvicorn
+    port = int(os.getenv("WEBHOOK_PORT", "8080"))
+    uvicorn.run(webhook_app, host="0.0.0.0", port=port, log_level="warning")
 
 
 async def post_init(app: Application) -> None:
@@ -46,6 +67,27 @@ async def post_init(app: Application) -> None:
         app.bot_data["allowed_user_id"] = int(_raw) if _raw else None
     except ValueError:
         app.bot_data["allowed_user_id"] = None
+
+    create_all_tables()
+    seed_plans_if_empty()
+    seed_test_balance_if_set()
+    app.bot_data["payment_service"] = PaymentService()
+    _raw_whitelist = (os.getenv("TELEGRAM_WHITELIST_USER_IDS") or "").strip()
+    if _raw_whitelist:
+        svc = app.bot_data["payment_service"]
+        for part in _raw_whitelist.split(","):
+            part = part.strip()
+            if part:
+                try:
+                    uid = int(part)
+                    svc.whitelist_add(uid, reason="env")
+                except ValueError:
+                    pass
+
+    webhook_thread = threading.Thread(target=_run_webhook_server, daemon=True)
+    webhook_thread.start()
+    logger.info("Webhook de pagamentos iniciado (porta %s)", os.getenv("WEBHOOK_PORT", "8080"))
+
     logger.info("Cookies do Instagram (para envio pelo Telegram): %s", COOKIES_FILE_DEFAULT)
     worker_task = asyncio.create_task(run_worker(redis, app))
     app.bot_data["worker_task"] = worker_task
@@ -89,8 +131,13 @@ def main() -> None:
 )
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("saldo", cmd_saldo))
+    app.add_handler(CommandHandler("historico", cmd_historico))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("delete", cmd_delete))
+    app.add_handler(CommandHandler("planos", cmd_planos))
+    app.add_handler(CommandHandler("comprar", cmd_comprar))
+    app.add_handler(CommandHandler("whitelist", cmd_whitelist))
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )

@@ -19,6 +19,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ENABLE_VIDEO_SUMMARY=${ENABLE_VIDEO_SUMMARY:-true}
+    volumes:
+      - sqlite_data:/app/data
     networks:
       - default
     depends_on:
@@ -34,3 +36,9 @@ volumes:
       type: none
       o: bind
       device: /workspace/volumes/davirezendemota/salvaai/redis
+  sqlite_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /workspace/volumes/davirezendemota/salvaai/sqlite

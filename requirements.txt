@@ -9,3 +9,5 @@ watchdog>=4.0.0
 redis>=5.0.0
 # resumo de vídeo (transcrição Whisper + resumo GPT)
 openai>=1.0.0
+# banco de dados (pagamentos, usuários, uso)
+sqlmodel>=0.0.22

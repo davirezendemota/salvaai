@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from telegram.ext import Application
 
 from src.downloader import NoVideoInPostError, download_video, DownloadResult
-from src.summary import generate_summary
+from src.summary import generate_summary, normalize_hashtags
 from src.transcribe import transcribe_video
 from src.video_utils import get_video_dimensions, video_to_gif
 
@@ -77,12 +77,20 @@ def _ensure_file_removed(path: Path | None) -> None:
         logger.warning("Erro ao remover arquivo temporário %s: %s", path, e)
 
 
-async def push_job(redis: Redis, chat_id: int, status_message_id: int, url: str) -> None:
+async def push_job(
+    redis: Redis,
+    chat_id: int,
+    status_message_id: int,
+    url: str,
+    *,
+    telegram_user_id: int | None = None,
+) -> None:
     """Coloca um job de download na fila (LPUSH)."""
     job = {
         "chat_id": chat_id,
         "status_message_id": status_message_id,
         "url": url,
+        "telegram_user_id": telegram_user_id or chat_id,
     }
     await redis.lpush(QUEUE_KEY, json.dumps(job))
     logger.info("Job enfileirado: chat_id=%s url=%s", chat_id, url[:50])
@@ -93,7 +101,9 @@ async def _process_job(bot: "Bot", bot_data: dict, payload: dict) -> None:
     chat_id = payload["chat_id"]
     status_message_id = payload["status_message_id"]
     url = payload["url"]
+    telegram_user_id = payload.get("telegram_user_id") or chat_id
     redis = bot_data.get("redis")
+    payment_service = bot_data.get("payment_service")
 
     video_path: Path | None = None
     gif_path: Path | None = None
@@ -144,7 +154,28 @@ async def _process_job(bot: "Bot", bot_data: dict, payload: dict) -> None:
                 caption = summary_text
         if caption is None and description:
             caption = description
-        if caption and len(caption) > TELEGRAM_CAPTION_MAX_LENGTH:
+        if caption:
+            caption = normalize_hashtags(caption)
+
+        # Registrar uso (obter ID para caption); saldo só é debitado após envio com sucesso
+        usage_id: int | None = None
+        if payment_service:
+            usage_id = await asyncio.to_thread(
+                payment_service.record_usage,
+                telegram_user_id,
+                url,
+                0.0,
+            )
+        if usage_id is None and payment_service:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_message_id,
+                text="Você não tem saldo de posts. Use /planos e /comprar para recarregar.",
+            )
+            return
+
+        caption = f"[P{usage_id:04d}]\n\n" + (caption or "")
+        if len(caption) > TELEGRAM_CAPTION_MAX_LENGTH:
             caption = caption[: TELEGRAM_CAPTION_MAX_LENGTH - 3] + "..."
 
         size = video_path.stat().st_size
@@ -183,16 +214,17 @@ async def _process_job(bot: "Bot", bot_data: dict, payload: dict) -> None:
                         read_timeout=60,
                         write_timeout=60,
                     )
+                if payment_service:
+                    await asyncio.to_thread(
+                        payment_service.deduct_balance,
+                        telegram_user_id,
+                    )
                 if redis:
                     await increment_daily_download_count(redis, chat_id)
-                    count = await get_daily_download_count(redis, chat_id)
-                    status_text = f"Enviado como GIF (vídeo > 50 MB). {count}/{DOWNLOADS_PER_DAY_LIMIT}"
-                else:
-                    status_text = "Enviado como GIF (vídeo > 50 MB)."
                 await bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=status_message_id,
-                    text=status_text,
+                    text="Enviado como GIF (vídeo > 50 MB).",
                 )
                 _ensure_file_removed(gif_path)
                 return
@@ -228,16 +260,17 @@ async def _process_job(bot: "Bot", bot_data: dict, payload: dict) -> None:
                 video=f,
                 **send_kwargs,
             )
+        if payment_service:
+            await asyncio.to_thread(
+                payment_service.deduct_balance,
+                telegram_user_id,
+            )
         if redis:
             await increment_daily_download_count(redis, chat_id)
-            count = await get_daily_download_count(redis, chat_id)
-            status_text = f"Video enviado. {count}/{DOWNLOADS_PER_DAY_LIMIT}"
-        else:
-            status_text = "Video enviado."
         await bot.edit_message_text(
             chat_id=chat_id,
             message_id=status_message_id,
-            text=status_text,
+            text="Video enviado.",
         )
     except Exception as e:
         logger.exception("Erro ao processar link Instagram: %s", e)
