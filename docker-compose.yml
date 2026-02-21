@@ -10,8 +10,11 @@ services:
     env_file: .env
     volumes:
       - ./src:/app/src
+      - ./assets:/app/assets
+      - ./sqlite:/app/data
     depends_on:
       - redis
     command: ["watchmedo", "auto-restart", "-d", "/app/src", "-p", "*.py", "--", "python", "-m", "src.main"]
 volumes:
   redis_data: {}
+  sqlite_data: {}
